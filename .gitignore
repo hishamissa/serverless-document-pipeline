@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+
+# SAM / build artifacts
+.aws-sam/
+packaged.yaml
+samconfig.local.toml
+
+# AWS credentials / secrets — never commit
+.env
+*.pem
+credentials
+aws-exports.json
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

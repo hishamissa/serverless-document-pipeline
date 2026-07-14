@@ -1,0 +1,4 @@
+# Runtime dependencies for Lambda functions.
+# boto3 is provided by the AWS Lambda Python runtime, so it is intentionally
+# NOT pinned here (keeps the deployment package small). Add real runtime deps
+# only if a function needs a library the runtime does not ship.

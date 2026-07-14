@@ -1,0 +1,9 @@
+# SAM CLI configuration. Safe to commit: contains no secrets or account ids.
+version = 0.1
+
+[default.deploy.parameters]
+stack_name = "doc-pipeline"
+region = "us-east-1"
+capabilities = "CAPABILITY_IAM"
+resolve_s3 = true
+confirm_changeset = true

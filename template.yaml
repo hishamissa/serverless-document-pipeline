@@ -1,0 +1,192 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Serverless event-driven document processing pipeline.
+  API Gateway -> Submit Lambda -> S3 + SQS -> Worker Lambda -> DynamoDB,
+  with a Dead Letter Queue for messages that fail repeatedly.
+
+Globals:
+  Function:
+    Runtime: python3.12
+    MemorySize: 256
+    Timeout: 30
+    Architectures:
+      - arm64
+    Tracing: Active
+    Environment:
+      Variables:
+        LOG_LEVEL: INFO
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: doc-pipeline
+    Description: Prefix used to name resources.
+
+Resources:
+  # ---------------------------------------------------------------------------
+  # Storage
+  # ---------------------------------------------------------------------------
+  DocumentsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${ProjectName}-documents-${AWS::AccountId}"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          # Cost safety: uploaded documents are transient inputs.
+          - Id: expire-uploads
+            Status: Enabled
+            Prefix: uploads/
+            ExpirationInDays: 7
+
+  JobsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${ProjectName}-jobs"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: job_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: job_id
+          KeyType: HASH
+
+  # ---------------------------------------------------------------------------
+  # Messaging
+  # ---------------------------------------------------------------------------
+  JobsDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${ProjectName}-jobs-dlq"
+      MessageRetentionPeriod: 1209600 # 14 days — max, gives time to inspect.
+
+  JobsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${ProjectName}-jobs"
+      # Visibility timeout must be >= worker function timeout.
+      VisibilityTimeout: 180
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt JobsDLQ.Arn
+        maxReceiveCount: 3
+
+  # ---------------------------------------------------------------------------
+  # API
+  # ---------------------------------------------------------------------------
+  Api:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: prod
+      Auth:
+        ApiKeyRequired: true
+        UsagePlan:
+          CreateUsagePlan: PER_API
+          Description: Usage plan for the document pipeline API.
+          Throttle:
+            RateLimit: 20
+            BurstLimit: 40
+      # Allow text and CSV bodies to arrive as raw content.
+      BinaryMediaTypes:
+        - "text/csv"
+        - "text/plain"
+        - "application/octet-stream"
+
+  # ---------------------------------------------------------------------------
+  # Functions
+  # ---------------------------------------------------------------------------
+  SubmitFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${ProjectName}-submit"
+      CodeUri: src/
+      Handler: api.submit.handler
+      Environment:
+        Variables:
+          BUCKET_NAME: !Ref DocumentsBucket
+          TABLE_NAME: !Ref JobsTable
+          QUEUE_URL: !Ref JobsQueue
+      Policies:
+        - S3WritePolicy:
+            BucketName: !Sub "${ProjectName}-documents-${AWS::AccountId}"
+        - DynamoDBWritePolicy:
+            TableName: !Ref JobsTable
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt JobsQueue.QueueName
+      Events:
+        Submit:
+          Type: Api
+          Properties:
+            RestApiId: !Ref Api
+            Path: /jobs
+            Method: post
+
+  StatusFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${ProjectName}-status"
+      CodeUri: src/
+      Handler: api.status.handler
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref JobsTable
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref JobsTable
+      Events:
+        Status:
+          Type: Api
+          Properties:
+            RestApiId: !Ref Api
+            Path: /jobs/{job_id}
+            Method: get
+
+  WorkerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${ProjectName}-worker"
+      CodeUri: src/
+      Handler: worker.handler.handler
+      Environment:
+        Variables:
+          BUCKET_NAME: !Ref DocumentsBucket
+          TABLE_NAME: !Ref JobsTable
+      Policies:
+        - S3ReadPolicy:
+            BucketName: !Sub "${ProjectName}-documents-${AWS::AccountId}"
+        - DynamoDBCrudPolicy:
+            TableName: !Ref JobsTable
+      Events:
+        Queue:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt JobsQueue.Arn
+            BatchSize: 5
+            FunctionResponseTypes:
+              - ReportBatchItemFailures
+
+Outputs:
+  ApiBaseUrl:
+    Description: Base URL for the API (append /jobs).
+    Value: !Sub "https://${Api}.execute-api.${AWS::Region}.amazonaws.com/prod"
+  ApiKeyId:
+    Description: >
+      API key id. Retrieve the secret value with:
+      aws apigateway get-api-key --api-key <id> --include-value --query value --output text
+    Value: !Ref ApiApiKey
+  DocumentsBucketName:
+    Value: !Ref DocumentsBucket
+  JobsTableName:
+    Value: !Ref JobsTable
+  JobsQueueUrl:
+    Value: !Ref JobsQueue
+  JobsDLQUrl:
+    Value: !Ref JobsDLQ
