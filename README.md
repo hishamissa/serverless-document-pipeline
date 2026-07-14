@@ -1,5 +1,7 @@
 # Serverless Document Processing Pipeline
 
+[![CI](https://github.com/hishamissa/serverless-document-pipeline/actions/workflows/ci.yml/badge.svg)](https://github.com/hishamissa/serverless-document-pipeline/actions/workflows/ci.yml)
+
 An event-driven, serverless pipeline on AWS that accepts a document (CSV or
 plain text), processes it asynchronously, and exposes the extracted results
 through a status API. Built with AWS SAM, Python 3.12, and Lambda.
