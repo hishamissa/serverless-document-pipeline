@@ -35,7 +35,9 @@ _MAX_BYTES = 5 * 1024 * 1024  # 5 MB guard — keeps us in free tier and sane.
 
 def handler(event: dict, context: object) -> dict:
     job_id = str(uuid.uuid4())
-    log = BoundLogger(_logger, job_id=job_id)
+    log = BoundLogger(
+        _logger, job_id=job_id, request_id=getattr(context, "aws_request_id", None)
+    )
 
     params = event.get("queryStringParameters") or {}
     doc_type = (params.get("type") or "text").lower()
@@ -55,18 +57,33 @@ def handler(event: dict, context: object) -> dict:
 
     s3_key = f"uploads/{job_id}/{filename}"
 
-    boto3.client("s3").put_object(Bucket=BUCKET_NAME, Key=s3_key, Body=body)
-    log.info("stored document", s3_key=s3_key, size=len(body))
+    # Store the document and create the job row. A failure here means nothing
+    # was enqueued, so a plain 500 is safe — the client can retry cleanly.
+    try:
+        boto3.client("s3").put_object(Bucket=BUCKET_NAME, Key=s3_key, Body=body)
+        log.info("stored document", s3_key=s3_key, size=len(body))
+        store.create_job(TABLE_NAME, job_id, s3_key, doc_type, filename)
+    except Exception:
+        log.exception("failed to store/register job")
+        return json_response(500, {"job_id": job_id, "error": "failed to accept job"})
 
-    store.create_job(TABLE_NAME, job_id, s3_key, doc_type, filename)
-
-    boto3.client("sqs").send_message(
-        QueueUrl=QUEUE_URL,
-        MessageBody=json.dumps(
-            {"job_id": job_id, "s3_key": s3_key, "doc_type": doc_type}
-        ),
-    )
-    log.info("enqueued job")
+    # Enqueue. If this fails the job row already exists, so mark it FAILED to
+    # avoid an orphaned job stuck in PENDING with no worker ever picking it up.
+    try:
+        boto3.client("sqs").send_message(
+            QueueUrl=QUEUE_URL,
+            MessageBody=json.dumps(
+                {"job_id": job_id, "s3_key": s3_key, "doc_type": doc_type}
+            ),
+        )
+        log.info("enqueued job")
+    except Exception:
+        log.exception("failed to enqueue; marking job FAILED")
+        try:
+            store.mark_failed(TABLE_NAME, job_id, "failed to enqueue for processing")
+        except Exception:
+            log.exception("could not mark orphaned job FAILED")
+        return json_response(500, {"job_id": job_id, "error": "failed to enqueue job"})
 
     return json_response(202, {"job_id": job_id, "status": store.PENDING})
 

@@ -15,7 +15,9 @@ TABLE_NAME = os.environ.get("TABLE_NAME", "")
 def handler(event: dict, context: object) -> dict:
     path_params = event.get("pathParameters") or {}
     job_id = path_params.get("job_id")
-    log = BoundLogger(_logger, job_id=job_id)
+    log = BoundLogger(
+        _logger, job_id=job_id, request_id=getattr(context, "aws_request_id", None)
+    )
 
     if not job_id:
         return json_response(400, {"error": "missing job_id"})

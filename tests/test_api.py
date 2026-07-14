@@ -66,6 +66,50 @@ class TestSubmit:
         resp = submit.handler(_submit_event("data", "pdf"), None)
         assert resp["statusCode"] == 400
 
+    def test_enqueue_failure_marks_job_failed(self, aws, monkeypatch):
+        """If SQS send fails, the created job must not be orphaned as PENDING."""
+        import boto3
+
+        import api.submit as submit
+        from common import store
+
+        real_client = boto3.client
+
+        def fake_client(service, *a, **k):
+            client = real_client(service, *a, **k)
+            if service == "sqs":
+                def boom(*a, **k):
+                    raise RuntimeError("sqs unavailable")
+                monkeypatch.setattr(client, "send_message", boom)
+            return client
+
+        monkeypatch.setattr(submit.boto3, "client", fake_client)
+
+        resp = submit.handler(_submit_event("hello world", "text"), None)
+        assert resp["statusCode"] == 500
+        job_id = json.loads(resp["body"])["job_id"]
+        assert store.get_job(aws["table"], job_id)["status"] == "FAILED"
+
+    def test_storage_failure_returns_500(self, aws, monkeypatch):
+        import boto3
+
+        import api.submit as submit
+
+        real_client = boto3.client
+
+        def fake_client(service, *a, **k):
+            client = real_client(service, *a, **k)
+            if service == "s3":
+                def boom(*a, **k):
+                    raise RuntimeError("s3 unavailable")
+                monkeypatch.setattr(client, "put_object", boom)
+            return client
+
+        monkeypatch.setattr(submit.boto3, "client", fake_client)
+
+        resp = submit.handler(_submit_event("hello world", "text"), None)
+        assert resp["statusCode"] == 500
+
 
 class TestStatus:
     def test_not_found(self, aws):

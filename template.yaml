@@ -79,6 +79,26 @@ Resources:
         deadLetterTargetArn: !GetAtt JobsDLQ.Arn
         maxReceiveCount: 3
 
+  # Observability: fire when anything lands in the DLQ (a message that failed
+  # all redelivery attempts). No SNS action wired up to stay zero-cost — the
+  # alarm state is visible in the CloudWatch console.
+  JobsDLQAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ProjectName}-dlq-not-empty"
+      AlarmDescription: A document job failed all retries and landed in the DLQ.
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt JobsDLQ.QueueName
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
   # ---------------------------------------------------------------------------
   # API
   # ---------------------------------------------------------------------------

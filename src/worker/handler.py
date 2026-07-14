@@ -39,15 +39,16 @@ TABLE_NAME = os.environ.get("TABLE_NAME", "")
 
 def handler(event: dict, context: object) -> dict:
     failures: list[dict] = []
+    request_id = getattr(context, "aws_request_id", None)
 
     for record in event.get("Records", []):
         message_id = record.get("messageId")
         try:
-            _process_record(record)
+            _process_record(record, request_id)
         except Exception:  # noqa: BLE001 — transient: let SQS retry / DLQ.
             _logger.error(
                 "record failed, will retry",
-                extra={"context": {"message_id": message_id}},
+                extra={"context": {"message_id": message_id, "request_id": request_id}},
                 exc_info=True,
             )
             failures.append({"itemIdentifier": message_id})
@@ -55,12 +56,17 @@ def handler(event: dict, context: object) -> dict:
     return {"batchItemFailures": failures}
 
 
-def _process_record(record: dict) -> None:
+def _process_record(record: dict, request_id: str | None = None) -> None:
     message = json.loads(record["body"])
     job_id = message["job_id"]
     s3_key = message["s3_key"]
     doc_type = message["doc_type"]
-    log = BoundLogger(_logger, job_id=job_id, message_id=record.get("messageId"))
+    log = BoundLogger(
+        _logger,
+        job_id=job_id,
+        message_id=record.get("messageId"),
+        request_id=request_id,
+    )
 
     # Cheap idempotency guard for the common duplicate-delivery case.
     existing = store.get_job(TABLE_NAME, job_id)
