@@ -47,7 +47,7 @@ flowchart LR
 
 1. Client `POST`s a document to `/jobs`. The **Submit Lambda** writes it to S3,
    creates a `PENDING` job row in DynamoDB, enqueues a message to SQS, and
-   returns `202 Accepted` with a `job_id` — immediately, without waiting for
+   returns `202 Accepted` with a `job_id` right away, without waiting for
    processing.
 2. The **Worker Lambda** is triggered by the SQS queue. It fetches the document
    from S3, extracts structured data, and writes the result to DynamoDB
@@ -56,7 +56,7 @@ flowchart LR
 3. The client polls `GET /jobs/{job_id}` (the **Status Lambda**) to retrieve
    status and results.
 4. A message that fails processing 3 times is moved to a **Dead Letter Queue**
-   for inspection; a CloudWatch alarm fires when the DLQ is non-empty.
+   for inspection, and a CloudWatch alarm fires when the DLQ is non-empty.
 
 ---
 
@@ -69,16 +69,16 @@ single bad file could fail the whole request.
 
 Putting a **queue between ingestion and processing** solves this:
 
-- **Fast responses** — the API just stores, enqueues, and returns `202`. The
+- **Fast responses.** The API just stores, enqueues, and returns `202`. The
   caller gets a `job_id` in milliseconds and polls for the result.
-- **Load levelling** — SQS absorbs bursts. The worker scales out to drain the
-  backlog and back down to zero when idle; nothing is over-provisioned.
-- **Resilience** — if the worker errors or is briefly unavailable, messages stay
+- **Load levelling.** SQS absorbs bursts. The worker scales out to drain the
+  backlog and back down to zero when idle, so nothing is over-provisioned.
+- **Resilience.** If the worker errors or is briefly unavailable, messages stay
   on the queue and are retried. Nothing is lost. Repeated failures are isolated
   in the DLQ instead of blocking healthy traffic.
-- **Independent scaling & evolution** — ingestion and processing scale on
-  different signals and can change independently (e.g. swap the extractor)
-  without touching the API.
+- **Independent scaling and evolution.** Ingestion and processing scale on
+  different signals and can change independently (for example, swapping the
+  extractor) without touching the API.
 
 ---
 
@@ -171,8 +171,8 @@ printf 'cloud computing is great. cloud systems scale. serverless serverless ser
 }
 ```
 
-A malformed document (e.g. an empty CSV) returns `status: FAILED` with an
-`error` explaining why — it does **not** poison the queue.
+A malformed document (for example an empty CSV) returns `status: FAILED` with an
+`error` explaining why. It does **not** poison the queue.
 
 ---
 
@@ -200,7 +200,7 @@ Everything is created in `us-east-1` and stays within the AWS free tier
 ## Tests
 
 The suite unit-tests the extraction logic and exercises every handler against
-**mocked AWS** (moto) — no cloud resources or credentials required.
+**mocked AWS** (moto), so no cloud resources or credentials are required.
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
@@ -240,20 +240,20 @@ but a queue buys **load levelling, retries, and backpressure** for free. SQS
 absorbs bursts and lets the worker scale independently, retries transient
 failures without client involvement, and isolates repeatedly-failing messages
 in a DLQ. Direct invocation couples the caller's latency to processing time and
-has no natural buffer or retry story. The cost is eventual consistency — the
-result isn't ready the instant `POST` returns — which is why the API is
+has no natural buffer or retry story. The cost is eventual consistency, since
+the result isn't ready the instant `POST` returns, which is why the API is
 poll-based (`202` + `job_id`).
 
 ### How idempotency is handled
 SQS is **at-least-once**, so the worker must tolerate duplicate deliveries. Two
 layers guard against double-processing:
-1. A cheap **read guard** — if the job is already `COMPLETE`, the worker logs and
+1. A cheap **read guard**: if the job is already `COMPLETE`, the worker logs and
    skips.
 2. The authoritative defence is a **conditional write**: completion only
    succeeds when the job is not already `COMPLETE`
    (`ConditionExpression: status <> COMPLETE`). A duplicate that races past the
    read guard fails the condition and is treated as a no-op. This was verified
-   live — two duplicate deliveries left the row's `updated_at` untouched.
+   live, where two duplicate deliveries left the row's `updated_at` untouched.
 
 Because extraction is deterministic and the write is conditional, reprocessing
 is safe and never corrupts a finished job.
@@ -265,8 +265,8 @@ The DLQ (`maxReceiveCount: 3`) **quarantines poison messages** after three
 attempts so healthy traffic keeps flowing, and preserves the failed message for
 debugging. A CloudWatch alarm signals when anything lands there. Note the
 distinction: *malformed documents* are an expected outcome and are marked
-`FAILED` in DynamoDB (the message is consumed successfully) — only *unexpected*
-failures (e.g. S3 unavailable, a bug) flow to the DLQ.
+`FAILED` in DynamoDB (the message is consumed successfully), while only
+*unexpected* failures (for example S3 unavailable, or a bug) flow to the DLQ.
 
 ### Least-privilege IAM
 Each function gets only the permissions it needs, via scoped SAM policy
@@ -275,16 +275,16 @@ CRUD its DynamoDB table; Status can only read DynamoDB. No wildcard resource
 policies.
 
 ### What would change to make this production-grade?
-- **Auth**: replace the API key with Cognito / OAuth / IAM SigV4; add per-tenant
-  authorization.
+- **Auth**: replace the API key with Cognito / OAuth / IAM SigV4, and add
+  per-tenant authorization.
 - **Result delivery**: offer webhooks or WebSocket/SSE push instead of polling.
 - **Observability**: emit metrics (jobs processed, failure rate, latency),
   wire the DLQ alarm to SNS/PagerDuty, and add distributed tracing spans.
 - **DLQ handling**: an automated redrive path and alerting runbook.
 - **Schema & validation**: stronger input validation, size/type limits enforced
   at the edge, and a versioned result schema.
-- **Data lifecycle**: TTL on DynamoDB job rows; tighter S3 lifecycle; encryption
-  with a customer-managed KMS key.
+- **Data lifecycle**: TTL on DynamoDB job rows, tighter S3 lifecycle, and
+  encryption with a customer-managed KMS key.
 - **Delivery**: staged environments (dev/stage/prod), automated deploys from CI,
   and canary releases.
 - **Scale**: tune worker batch size / concurrency, add SQS long-polling and a
